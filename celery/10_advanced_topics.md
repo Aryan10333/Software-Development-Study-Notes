@@ -185,27 +185,6 @@ If your Redis is overloaded, or if the `chord_unlock` task keeps failing (e.g., 
 * **Concept:** Standard Celery workflows exist only in memory (or loosely in Redis). If you have a chain `A -> B -> C` and the system crashes during `B`, the link to `C` might be lost if not carefully persisted.
 * **Solution:** For truly "Immortal" workflows that can survive total system destruction and resume days later, standard Celery Canvas is sometimes insufficient. You might need to use **persistent state machines** stored in a database (e.g., tracking the workflow state in a Postgres table and launching the next step only upon DB confirmation). This is often a manual implementation pattern rather than a built-in Celery feature.
 
-
-Yes, most of these were covered in **Section 6 (Error Handling)** and **Section 10 (Advanced Worker Optimization)**, but **Idempotent Design**, **Per-User Rate Limiting**, and **Backpressure** were only briefly touched upon or need more specific detail to be fully understood in a production context.
-
-Here is the breakdown of what was covered and the **detailed study notes for the missing nuances**.
-
----
-
-### **Status Check**
-
-| Topic | Status | Where it was covered |
-| --- | --- | --- |
-| **soft_time_limit vs time_limit** | ✅ **Covered** | Section 6 (Timeouts). |
-| **Retries with backoff** | ✅ **Covered** | Section 6 (Automatic Retries). |
-| **Dead-letter queues (DLQ)** | ✅ **Covered** | Section 6 (Routing failed tasks). |
-| **Idempotent task design** | ⚠️ **Partial** | Mentioned in "Late Acks", but needs design patterns. |
-| **Rate limiting** | ⚠️ **Partial** | Global task limits covered in Section 10. **Per-user/org** limits were not. |
-| **Backpressure** | ❌ **Missing** | Not explicitly covered. |
-
----
-
-
 ### **Rate Limiting (Per User / Per Org)**
 
 The built-in `@app.task(rate_limit='10/m')` is **global**. It limits the *total* throughput of that task across all workers. It does **not** stop "User A" from hogging all the slots while "User B" waits.
