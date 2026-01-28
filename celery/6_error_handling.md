@@ -96,3 +96,31 @@ What happens if a task fails 5 times, and you've exhausted your `max_retries`?
 * **The Problem:** By default, Celery discards the task. It's just gone.
 * **The Solution:** Route failed tasks to a separate queue (a "Dead Letter Exchange") so you can inspect them later.
 * **Implementation:** You configure `task_acks_on_failure_or_timeout=False` and set up routing rules such that when a task permanently fails, it is pushed to a `failed_tasks` queue. You can then write scripts to inspect this queue and decide whether to fix the data and re-run them or delete them.
+
+### **Idempotent Task Design (Crucial for Reliability)**
+
+Celery guarantees "At-least-once" delivery (with late acks). This means a task might run twice. **Idempotency** means running the task 5 times yields the same result as running it once.
+
+* **The Problem:**
+`process_payment(amount=10)` runs. Worker crashes *after* charging the card but *before* sending the Ack. The new worker picks up the task and charges the card again.
+* **The Design Pattern:**
+1. **Unique Keys:** Every task must have a unique identifier (e.g., `transaction_id` or `deduplication_key`).
+2. **Check-Then-Act:**
+```python
+@shared_task(bind=True)
+def process_payment(self, transaction_id):
+    # 1. Check if we already did this
+    if Payment.objects.filter(id=transaction_id, status='PAID').exists():
+        logger.info(f"Transaction {transaction_id} already processed.")
+        return "ALREADY_DONE"
+
+    # 2. If not, do the work (atomically if possible)
+    perform_charge()
+
+    # 3. Mark as done
+    mark_transaction_as_paid(transaction_id)
+
+```
+
+
+* **Redis Locks:** Use a distributed lock (via `celery_once` or raw Redis) to ensure two workers don't pick up duplicate tasks simultaneously.

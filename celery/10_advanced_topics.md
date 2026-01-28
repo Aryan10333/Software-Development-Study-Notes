@@ -184,3 +184,75 @@ If your Redis is overloaded, or if the `chord_unlock` task keeps failing (e.g., 
 
 * **Concept:** Standard Celery workflows exist only in memory (or loosely in Redis). If you have a chain `A -> B -> C` and the system crashes during `B`, the link to `C` might be lost if not carefully persisted.
 * **Solution:** For truly "Immortal" workflows that can survive total system destruction and resume days later, standard Celery Canvas is sometimes insufficient. You might need to use **persistent state machines** stored in a database (e.g., tracking the workflow state in a Postgres table and launching the next step only upon DB confirmation). This is often a manual implementation pattern rather than a built-in Celery feature.
+
+
+Yes, most of these were covered in **Section 6 (Error Handling)** and **Section 10 (Advanced Worker Optimization)**, but **Idempotent Design**, **Per-User Rate Limiting**, and **Backpressure** were only briefly touched upon or need more specific detail to be fully understood in a production context.
+
+Here is the breakdown of what was covered and the **detailed study notes for the missing nuances**.
+
+---
+
+### **Status Check**
+
+| Topic | Status | Where it was covered |
+| --- | --- | --- |
+| **soft_time_limit vs time_limit** | ✅ **Covered** | Section 6 (Timeouts). |
+| **Retries with backoff** | ✅ **Covered** | Section 6 (Automatic Retries). |
+| **Dead-letter queues (DLQ)** | ✅ **Covered** | Section 6 (Routing failed tasks). |
+| **Idempotent task design** | ⚠️ **Partial** | Mentioned in "Late Acks", but needs design patterns. |
+| **Rate limiting** | ⚠️ **Partial** | Global task limits covered in Section 10. **Per-user/org** limits were not. |
+| **Backpressure** | ❌ **Missing** | Not explicitly covered. |
+
+---
+
+
+### **Rate Limiting (Per User / Per Org)**
+
+The built-in `@app.task(rate_limit='10/m')` is **global**. It limits the *total* throughput of that task across all workers. It does **not** stop "User A" from hogging all the slots while "User B" waits.
+
+* **How to implement Per-User Limits:**
+You must implement this manually inside the task (usually at the start) or using a custom router.
+* **Manual Token Bucket (Inside Task):**
+```python
+@shared_task(bind=True)
+def scrape_for_user(self, user_id):
+    # Check Redis for user's usage count in the last minute
+    key = f"rate_limit:{user_id}"
+    if redis.get(key) > 10:
+        # Re-queue the task for later (delay 60s)
+        raise self.retry(countdown=60)
+
+    redis.incr(key)
+    redis.expire(key, 60)
+
+    # ... proceed with logic ...
+    ```
+
+
+```
+
+
+### **Backpressure (Protecting the System)**
+
+Backpressure is the mechanism of saying "I am too busy, stop sending more work." By default, Celery + Redis will happily accept 10 million tasks until Redis runs out of RAM (OOM).
+
+* **Strategy 1: Queue Limits (Redis-side)**
+* Redis Lists don't have hard limits by default. You have to monitor queue length.
+* **Application-side check:** Before calling `.delay()`, check the queue size.
+```python
+queue_len = app.control.inspect().active() # Expensive!
+# Better: use direct Redis client
+queue_len = redis_client.llen("celery")
+
+if queue_len > 10000:
+    raise ServiceUnavailable("System overloaded. Try again later.")
+else:
+    task.delay()
+
+```
+
+
+* **Strategy 2: Circuit Breakers**
+If tasks are failing rapidly (e.g., API is down), stop enqueueing new ones. Use a library like `pybreaker` to wrap your `.delay()` calls.
+* **Strategy 3: Consumer-side Backpressure (Prefetch)**
+As discussed in Section 10, setting `worker_prefetch_multiplier=1` prevents a slow worker from hoarding tasks, keeping them in Redis where other (faster) workers can pick them up. This is a form of load balancing backpressure.
